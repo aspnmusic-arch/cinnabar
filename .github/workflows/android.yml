@@ -1,4 +1,4 @@
-name: Android ARM64
+name: Android ARM64 BDS
 
 # Manual build using the repository's Android packaging scripts.
 # Test signing key: a later build may require uninstalling the previous APK.
@@ -24,6 +24,8 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
+          repository: cinnabar-mc/cinnabar
+          ref: dev
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@1.99.0
         with:
@@ -50,10 +52,39 @@ jobs:
           sudo apt-get install -y --no-install-recommends librsvg2-bin cmake ninja-build gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
       - name: Build the APK
         run: bash packaging/android/build-apk.sh
+      - name: Verify packaged Android servers and BDS runtime
+        run: |
+          python3 - <<'PY'
+          import json
+          import zipfile
+          from pathlib import Path
+          config = json.loads(Path("packaging/android/runtime.json").read_text())
+          bds = config["bds_translation"]
+          required = [config["core_library"], config["local_server_library"],
+                      config["compiler_library"], bds["helper_library"]]
+          required += [item["packaged"] for item in bds["native_runtime"]["libraries"]]
+          apks = list(Path("target/android").glob("*-arm64-v8a.apk"))
+          if not apks:
+              raise SystemExit("No APK generated")
+          for apk in apks:
+              with zipfile.ZipFile(apk) as archive:
+                  for name in required:
+                      path = "lib/arm64-v8a/" + name
+                      if path not in archive.namelist():
+                          raise SystemExit("Missing native component: " + path)
+                      if archive.getinfo(path).file_size == 0:
+                          raise SystemExit("Empty native component: " + path)
+              print("Verified native server components:", apk.name)
+          PY
+      - name: Record source revision
+        run: |
+          git rev-parse HEAD > target/android/source-commit.txt
       - uses: actions/upload-artifact@v7
         with:
           name: cinnabar-android-arm64
-          path: target/android/*-arm64-v8a.apk
+          path: |
+            target/android/*-arm64-v8a.apk
+            target/android/source-commit.txt
           if-no-files-found: error
           retention-days: 14
 
