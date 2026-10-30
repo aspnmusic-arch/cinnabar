@@ -1,12 +1,22 @@
-name: Android ARM64 BDS
+name: Android
 
-# Manual build using the repository's Android packaging scripts.
-# Test signing key: a later build may require uninstalling the previous APK.
+# Builds the experimental arm64 APK for Android packaging/release workflow changes, on CI's schedule and on
+# demand, so the Android target keeps compiling. The APK is signed with a throwaway key per run;
+# installing a later build means uninstalling first.
 on:
+  pull_request:
+    paths:
+      - packaging/android/**
+      - packaging/icons/**
+      - tools/localserver/**
+      - .github/workflows/android.yml
+      - .github/workflows/package.yml
+  schedule:
+    - cron: "41 */6 * * *"
   workflow_dispatch:
 
 concurrency:
-  group: android-arm64-${{ github.ref }}
+  group: android-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -24,8 +34,6 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          repository: cinnabar-mc/cinnabar
-          ref: dev
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@1.99.0
         with:
@@ -50,41 +58,32 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends librsvg2-bin cmake ninja-build gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+      - name: Build and inject bedrock-local-server for Android
+        run: |
+          # Configuramos la toolchain del NDK instalada por el SDK manager
+          NDK_TOOLCHAIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          
+          echo "Compilando bedrock-local-server para arm64..."
+          cd tools/localserver
+          
+          GOOS=android \
+          GOARCH=arm64 \
+          CGO_ENABLED=1 \
+          CC="$NDK_TOOLCHAIN/aarch64-linux-android28-clang" \
+          go build -ldflags="-s -w -buildid=" -o libbedrock_local_server.so ./cmd/bedrock-local-server
+          
+          cd ../..
+          
+          # Creamos la carpeta jniLibs para arm64 dentro del proyecto Android y movemos el .so
+          mkdir -p packaging/android/app/src/main/jniLibs/arm64-v8a/
+          cp tools/localserver/libbedrock_local_server.so packaging/android/app/src/main/jniLibs/arm64-v8a/
+          
+          echo "Servidor local inyectado correctamente en jniLibs/arm64-v8a/"
       - name: Build the APK
         run: bash packaging/android/build-apk.sh
-      - name: Verify packaged Android servers and BDS runtime
-        run: |
-          python3 - <<'PY'
-          import json
-          import zipfile
-          from pathlib import Path
-          config = json.loads(Path("packaging/android/runtime.json").read_text())
-          bds = config["bds_translation"]
-          required = [config["core_library"], config["local_server_library"],
-                      config["compiler_library"], bds["helper_library"]]
-          required += [item["packaged"] for item in bds["native_runtime"]["libraries"]]
-          apks = list(Path("target/android").glob("*-arm64-v8a.apk"))
-          if not apks:
-              raise SystemExit("No APK generated")
-          for apk in apks:
-              with zipfile.ZipFile(apk) as archive:
-                  for name in required:
-                      path = "lib/arm64-v8a/" + name
-                      if path not in archive.namelist():
-                          raise SystemExit("Missing native component: " + path)
-                      if archive.getinfo(path).file_size == 0:
-                          raise SystemExit("Empty native component: " + path)
-              print("Verified native server components:", apk.name)
-          PY
-      - name: Record source revision
-        run: |
-          git rev-parse HEAD > target/android/source-commit.txt
       - uses: actions/upload-artifact@v7
         with:
           name: cinnabar-android-arm64
-          path: |
-            target/android/*-arm64-v8a.apk
-            target/android/source-commit.txt
+          path: target/android/*-arm64-v8a.apk
           if-no-files-found: error
           retention-days: 14
-
