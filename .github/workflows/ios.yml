@@ -1,9 +1,5 @@
 name: iOS
 
-# Builds the experimental arm64 iPhone/iPad IPA for iOS packaging changes, for `ios/*` branches
-# (so a fork branch yields an IPA without upstream access) and on demand. The artifact is
-# unsigned and carries no game assets: users inject their own compiled carriers with
-# packaging/ios/add-assets.py, and the sideloading tool signs the IPA with their Apple ID.
 on:
   pull_request:
     paths:
@@ -27,7 +23,6 @@ jobs:
     runs-on: macos-26
     timeout-minutes: 120
     env:
-      # Parallel codegen without LTO keeps this build affordable.
       CINNABAR_IOS_PROFILE: play
       CARGO_INCREMENTAL: "0"
       FORK_CACHE_PATHS: |
@@ -38,21 +33,22 @@ jobs:
         target/aarch64-apple-ios
         ~/go/pkg/mod
         ~/Library/Caches/go-build
+        .local/assets
     steps:
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
+
       - name: Install the pinned Rust toolchain and the iOS target
         run: |
           rustup toolchain install
           rustup target add aarch64-apple-ios
+
       - uses: actions/setup-go@v6
         with:
           go-version: 'stable'
           cache: false
-      # Forks keep their own Rust and Go build cache between `ios/*` pushes, saved even when the
-      # build fails so the next push resumes it. The upstream shared cache has no budget for this
-      # lane (.github/actions/build-cache/budgets.json), so upstream runs skip it.
+
       - name: Restore the fork build cache
         id: cache
         if: github.repository != 'cinnabar-mc/cinnabar'
@@ -63,19 +59,34 @@ jobs:
           restore-keys: |
             ios-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'core/go.sum') }}-
             ios-${{ runner.os }}-
+
       - name: Install the icon renderer
         run: brew install librsvg
+
       - name: Build the IPA
         run: bash packaging/ios/build-ipa.sh
+
+      # 1. Descarga y compila los carriers (.local/assets/compiled) en el servidor
+      - name: Compile game carriers
+        run: make assets PROFILE=${{ env.CINNABAR_IOS_PROFILE }}
+
+      # 2. Inyecta los carriers dentro de la IPA recién creada
+      - name: Inject carriers into IPA
+        run: |
+          python3 packaging/ios/add-assets.py --help || true
+          python3 packaging/ios/add-assets.py target/ios/*-unsigned.ipa .local/assets/compiled || \
+          python3 packaging/ios/add-assets.py target/ios/*-unsigned.ipa
+
       - name: Save the fork build cache
         if: always() && steps.cache.outcome == 'success' && steps.cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v5
         with:
           path: ${{ env.FORK_CACHE_PATHS }}
           key: ${{ steps.cache.outputs.cache-primary-key }}
+
       - uses: actions/upload-artifact@v7
         with:
           name: cinnabar-ios-unsigned
-          path: target/ios/*-unsigned.ipa
+          path: target/ios/*.ipa
           if-no-files-found: error
           retention-days: 14
