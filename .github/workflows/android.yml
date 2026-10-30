@@ -1,21 +1,12 @@
-name: Android
+name: Android ARM64
 
-# Builds the experimental arm64 APK for Android packaging/release workflow changes, on CI's schedule and on
-# demand, so the Android target keeps compiling. The APK is signed with a throwaway key per run;
-# installing a later build means uninstalling first.
+# Manual build using the repository's Android packaging scripts.
+# Test signing key: a later build may require uninstalling the previous APK.
 on:
-  pull_request:
-    paths:
-      - packaging/android/**
-      - packaging/icons/**
-      - .github/workflows/android.yml
-      - .github/workflows/package.yml
-  schedule:
-    - cron: "41 */6 * * *"
   workflow_dispatch:
 
 concurrency:
-  group: android-${{ github.event.pull_request.number || github.ref }}
+  group: android-arm64-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -65,3 +56,4 @@ jobs:
           path: target/android/*-arm64-v8a.apk
           if-no-files-found: error
           retention-days: 14
+
